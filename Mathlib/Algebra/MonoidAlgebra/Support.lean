@@ -10,7 +10,6 @@ public import Mathlib.Algebra.MonoidAlgebra.Module
 public import Mathlib.LinearAlgebra.Finsupp.Supported
 public import Mathlib.Algebra.Group.Pointwise.Finset.Basic
 
-import Mathlib.LinearAlgebra.Span.Basic
 
 /-!
 # Lemmas about the support of a finitely supported function
