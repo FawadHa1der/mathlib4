@@ -802,6 +802,137 @@ example (x y : ℚ) (h₁ : x ≤ 0) (h₂ : y ≤ 0) (h₃ : x + y ≤ 0) (h₄
   linarith? -minimize only [h₁, h₂, h₃, h₄]
 
 /-!
+Regression tests: `linarith?` used to compute the used hypotheses as indices into the
+*preprocessed* hypothesis list but applied them to the *original* list, so any preprocessor
+that dropped, added, or split entries produced failures or bogus suggestions. In bare calls
+this was triggered by the local variable declarations, which `getLocalHyps` includes and
+`filterComparisons` drops.
+-/
+
+-- Bare mode with variable declarations in the context (`x`, `y`, `u`, `v` used to shift the
+-- indices, making this fail although `linarith` succeeds).
+/--
+info: Try this:
+  [apply] linarith only [hv, hu]
+-/
+#guard_msgs in
+example (x y u v : ℚ) (hu : u < v) (hv : v < u) : x < y := by
+  linarith?
+
+/--
+info: Try this:
+  [apply] linarith only [h]
+-/
+#guard_msgs in
+example (a u v : ℚ) (gu : u < v) (h : a < 0) : a ≤ 0 := by
+  linarith?
+
+-- Without minimization the reported set must already be exact: this used to suggest
+-- `linarith only [h, a]`, where `a` is a variable, not a hypothesis.
+/--
+info: Try this:
+  [apply] linarith only [h]
+-/
+#guard_msgs in
+example (a : ℚ) (h : a < 0) : a ≤ 0 := by
+  linarith? -minimize
+
+-- Goals over `ℕ`: `natToInt` prepends cast-nonnegativity facts, which used to shift all
+-- indices (breaking `only` mode as well). The certificate here uses `0 ≤ ↑a`, which is
+-- attributed to no hypothesis; rerunning from `h` alone recreates it.
+/--
+info: Try this:
+  [apply] linarith only [h]
+-/
+#guard_msgs in
+example (a b : ℕ) (h : a + 1 ≤ b) : 0 < b := by
+  linarith? -minimize
+
+/--
+info: Try this:
+  [apply] linarith only [h₃, h₂, h₁]
+-/
+#guard_msgs in
+example (a b c : ℕ) (h₁ : a ≤ b) (h₂ : b ≤ c) (h₃ : c < a) : False := by
+  linarith? only [h₁, h₂, h₃]
+
+-- The shift by the prepended `0 ≤ ↑c` used to attribute `h₀`'s role in the certificate
+-- to `h₂`.
+/--
+info: Try this:
+  [apply] linarith only [h₁, h₀]
+-/
+#guard_msgs in
+example (c : ℕ) (h₀ : 4 ≤ c) (h₁ : c ≤ 3) (h₂ : 0 ≤ c + 5) : False := by
+  linarith? -minimize only [h₀, h₁, h₂]
+
+-- Conjunctions are split by preprocessing (one entry becomes two); the suggestion must
+-- name the original hypothesis.
+/--
+info: Try this:
+  [apply] linarith only [h]
+-/
+#guard_msgs in
+example (a b : ℚ) (h : a < b ∧ a < 0) (hb : b < 0) : a < 0 := by
+  linarith?
+
+/--
+info: Try this:
+  [apply] linarith only [h2]
+-/
+#guard_msgs in
+example (a b : ℚ) (h1 : a ≤ b ∧ b ≤ a) (h2 : a < 0) : a ≤ 0 := by
+  linarith? only [h1, h2]
+
+-- `splitNe` case splits introduce new fvars whose provenance is the `≠` hypothesis.
+-- (Note the suggested call does not include `+splitNe`: suggestions do not yet reproduce
+-- the configuration of the original call.)
+/--
+info: Try this:
+  [apply] linarith only [h1, h]
+-/
+#guard_msgs in
+example (a b : ℚ) (h : a ≠ b) (h1 : a ≤ b) : a < b := by
+  linarith? +splitNe
+
+-- Equality goals run `linarith` twice (for `≤` and `≥`); both subcalls' hypotheses are
+-- reported, deduplicated.
+/--
+info: Try this:
+  [apply] linarith only [h2, h1]
+-/
+#guard_msgs in
+example (a b : ℚ) (h1 : a ≤ b) (h2 : b ≤ a) : a = b := by
+  linarith?
+
+-- Hypotheses of several types in the context (the goal type is preferred).
+/--
+info: Try this:
+  [apply] linarith only [hy]
+-/
+#guard_msgs in
+example (x : ℤ) (y : ℚ) (hx : x < 0) (hy : y < 0) : y ≤ 0 := by
+  linarith?
+
+-- A hypothesis passed both via the context and as an argument is reported once.
+/--
+info: Try this:
+  [apply] linarith only [h]
+-/
+#guard_msgs in
+example (a : ℚ) (h : a < 0) : a ≤ 0 := by
+  linarith? [h]
+
+-- Term arguments that are actually used still give the dedicated error message
+-- (this used to surface as `linarith failed to find a contradiction`).
+/--
+error: linarith? currently only supports named hypothesis, not terms
+-/
+#guard_msgs in
+example (a b : ℚ) (h : a < b) : a ≤ b := by
+  linarith? only [le_of_lt h]
+
+/-!
 From https://leanprover.zulipchat.com/#narrow/channel/287929-mathlib4/topic/Adding.20an.20extra.20hypothesis.20breaks.20linarith/near/533973472
 -/
 namespace metavariables

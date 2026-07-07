@@ -275,6 +275,58 @@ def findLinarithContradiction (cfg : LinarithConfig) (g : MVarId)
   catch e => throwError "linarith failed to find a contradiction\n{g}\n{e.toMessageData}"
 
 /--
+`usedHypIdxs hyps usedProofs branched` maps the preprocessed proof terms `usedProofs` (those
+reported by the oracle as having a nonzero coefficient in the certificate) back to indices
+into the pre-preprocessing hypothesis list `hyps`.
+
+Preprocessors build their output proofs on top of their input proofs (`And.left h`,
+`lt_of_not_ge h`, a cast of `h`, ...), so an entry of `hyps` was used iff it occurs in one of
+the used proof terms. Only proofs (Prop-typed entries) are considered: in a bare `linarith`
+call `hyps` also contains the local *variables*, which occur in the proof terms without being
+hypotheses.
+
+Facts that preprocessors create from whole cloth (such as `natToInt`'s `0 ≤ ↑a`) occur in no
+entry of `hyps` and are attributed to none. This cannot make the reported set insufficient:
+for the certificate to sum to a contradiction, every atom must cancel, so an atom of such a
+fact also occurs in a used hypothesis or in the goal, and a rerun of `linarith` from the
+reported hypotheses recreates the fact.
+
+If `branched` is true, a branching preprocessor has performed case splits (in-tree:
+`removeNe`, enabled by `splitNe := true`). Proofs in such branches can use fvars introduced by
+the case split, whose connection to the `≠` hypothesis that produced them is not visible in
+the proof term, so all `≠`-typed entries of `hyps` are conservatively included; `linarith?`'s
+minimization prunes the unnecessary ones.
+
+The result is ordered by first use in `usedProofs` and contains no duplicate hypotheses (an
+entry occurring at several positions of `hyps` is only reported at its first position).
+-/
+def usedHypIdxs (hyps : List Expr) (usedProofs : Array Expr) (branched : Bool) :
+    MetaM (List Nat) := do
+  let candidates ← hyps.zipIdx.filterMapM fun (h, i) => do
+    return if ← isProof h then some (h, i) else none
+  let mut usedIdxs : Array Nat := #[]
+  let mut usedHyps : Array Expr := #[]
+  for p in usedProofs do
+    let p ← instantiateMVars p
+    let pFVars := (collectFVars {} p).fvarSet
+    for (h, i) in candidates do
+      unless usedHyps.contains h do
+        if h.isFVar then
+          if pFVars.contains h.fvarId! then
+            usedIdxs := usedIdxs.push i
+            usedHyps := usedHyps.push h
+        else if h.occurs p then
+          usedIdxs := usedIdxs.push i
+          usedHyps := usedHyps.push h
+  if branched then
+    for (h, i) in candidates do
+      unless usedHyps.contains h do
+        if (← instantiateMVars (← inferType h)).ne?'.isSome then
+          usedIdxs := usedIdxs.push i
+          usedHyps := usedHyps.push h
+  return usedIdxs.toList
+
+/--
 Given a list `hyps` of proofs of comparisons, `runLinarith cfg prefType g hyps` preprocesses
 `hyps` according to the list of preprocessors in `cfg`. This results in a list of branches
 (typically only one), each of which must succeed in order to close the goal.
@@ -316,15 +368,18 @@ def runLinarith (cfg : LinarithConfig) (prefType : Option Expr) (g : MVarId)
   if cfg.splitHypotheses then
     preprocessors := Linarith.splitConjunctions.globalize.branching :: preprocessors
   let branches ← preprocess preprocessors g hyps
-  let mut used : List Nat := []
-  for (g, es) in branches do
+  let mut usedProofs : Array Expr := #[]
+  for (bg, es) in branches do
     let esIdx := es.zipIdx
-    let (r, idxs) ← singleProcess g esIdx
-    g.assign r
-    used := idxs ++ used
+    let (r, idxs) ← singleProcess bg esIdx
+    bg.assign r
+    usedProofs := usedProofs ++ idxs.filterMap (es[·]?)
   -- Verify that we closed the goal. Failure here should only result from a bad `Preprocessor`.
   (Expr.mvar g).ensureHasNoMVars
-  return used.eraseDups
+  -- The indices returned by `singleProcess` refer to the preprocessed list `es` of its branch,
+  -- which need not align with `hyps`: preprocessors drop, add, split and reorder entries.
+  -- Map the used preprocessed proofs themselves back to the entries of `hyps`.
+  g.withContext do usedHypIdxs hyps usedProofs (branches.length > 1)
 
 -- /--
 -- `filterHyps restr_type hyps` takes a list of proofs of comparisons `hyps`, and filters it
